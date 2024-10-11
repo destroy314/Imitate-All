@@ -35,6 +35,8 @@ class EpisodicDataset(torch.utils.data.Dataset):
         self.other_config = other_config
         self.augmentors = augmentors
         self.augment_images = augmentors.get("image", None)
+        self.feature_loss = other_config["policy_config"].get("feature_loss", False)
+        self.chunk_size = other_config["policy_config"]["chunk_size"]
         self.__getitem__(0)
 
     def __len__(self):
@@ -57,16 +59,25 @@ class EpisodicDataset(torch.utils.data.Dataset):
             if "qvel" in self.other_config:
                 qvel = root["/observations/qvel"][start_ts]
             image_dict = dict()
+            if self.feature_loss:
+                image_dict_future = {}
             for cam_name in self.camera_names:
                 image_dict[cam_name] = root[f"/observations/images/{cam_name}"][
                     start_ts
                 ]
+                if self.feature_loss:
+                    dummy_index = min(start_ts+self.chunk_size, episode_len - 1)
+                    image_dict_future[cam_name] = root[f'/observations/images/{cam_name}'][dummy_index]
             if compressed:
                 for cam_name in image_dict.keys():
                     import cv2
 
                     decompressed_image = cv2.imdecode(image_dict[cam_name], 1)
                     image_dict[cam_name] = np.array(decompressed_image)
+                if self.feature_loss:
+                    for cam_name in image_dict_future.keys():
+                        decompressed_image = cv2.imdecode(image_dict_future[cam_name], 1)
+                        image_dict_future[cam_name] = np.array(decompressed_image)
             # get all actions after and including start_ts
             # TODO: remove this hack or make it configurable
             # hack, to make timesteps more aligned
@@ -80,14 +91,23 @@ class EpisodicDataset(torch.utils.data.Dataset):
 
         # new axis for different cameras
         all_cam_images = []
+        if self.feature_loss:
+            all_cam_images_future = []
         for cam_name in self.camera_names:
             all_cam_images.append(image_dict[cam_name])
+            if self.feature_loss:
+                all_cam_images_future.append(image_dict_future[cam_name])
         # construct image metrix (the same as np.array)
         # each row is all images from one camera
         all_cam_images = np.stack(all_cam_images, axis=0)
+        if self.feature_loss:
+            all_cam_images_future = np.stack(all_cam_images_future, axis=0)
 
         # construct observations
         image_data = torch.from_numpy(all_cam_images)
+        if self.feature_loss:
+            image_data_future = torch.from_numpy(all_cam_images_future)
+            image_data = torch.cat([image_data, image_data_future], dim=0)
         qpos_data = torch.from_numpy(qpos).float()
         action_data = torch.from_numpy(padded_action).float()
         is_pad = torch.from_numpy(is_pad).bool()
@@ -209,9 +229,11 @@ def load_data(
 
     # construct dataset
     train_dataset = EpisodicDataset(
-        train_indices, dataset_dir, camera_names, norm_stats, augmentors
+        train_indices, dataset_dir, camera_names, norm_stats, augmentors, other_config
     )
-    val_dataset = EpisodicDataset(val_indices, dataset_dir, camera_names, norm_stats)
+    val_dataset = EpisodicDataset(
+        val_indices, dataset_dir, camera_names, norm_stats, other_config=other_config
+    )
     # construct dataloader
     print("batch_size_train:", batch_size_train)
     print("batch_size_val:", batch_size_val)
