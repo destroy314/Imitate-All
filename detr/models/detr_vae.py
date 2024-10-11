@@ -6,7 +6,7 @@ import torch
 from torch import nn
 from torch.autograd import Variable
 from .backbone import build_backbone
-from .transformer import build_transformer, TransformerEncoder, TransformerEncoderLayer
+from .transformer import build_transformer, build_transformer_decoder, TransformerEncoder, TransformerEncoderLayer
 import numpy as np
 
 
@@ -25,6 +25,78 @@ def get_sinusoid_encoding_table(n_position, d_hid):
     sinusoid_table[:, 1::2] = np.cos(sinusoid_table[:, 1::2])  # dim 2i+1
 
     return torch.FloatTensor(sinusoid_table).unsqueeze(0)
+
+
+class DETRVAE_Decoder(nn.Module):
+    """ This is the decoder only transformer """
+    def __init__(self, backbones, transformer_decoder, state_dim, num_queries, camera_names, action_dim,
+                 feature_loss=False):
+        super().__init__()
+        self.num_queries = num_queries
+        self.camera_names = camera_names
+        self.cam_num = len(camera_names)
+        self.transformer_decoder = transformer_decoder
+        self.state_dim, self.action_dim = state_dim, action_dim
+        hidden_dim = transformer_decoder.d_model
+        self.action_head = nn.Linear(hidden_dim, action_dim)
+        self.proprio_head = nn.Linear(hidden_dim, state_dim)
+        self.is_pad_head = nn.Linear(hidden_dim, 1)
+        self.query_embed = nn.Embedding(num_queries, hidden_dim)
+        if backbones is not None:
+            self.input_proj = nn.Conv2d(backbones[0].num_channels, hidden_dim, kernel_size=1)
+            self.backbones = nn.ModuleList(backbones)
+            self.input_proj_robot_state = nn.Linear(state_dim, hidden_dim)
+        else:
+            # input_dim = 14 + 7 # robot_state + env_state
+            self.input_proj_robot_state = nn.Linear(state_dim, hidden_dim)
+            self.input_proj_env_state = nn.Linear(7, hidden_dim)
+            self.pos = torch.nn.Embedding(2, hidden_dim)
+            self.backbones = None
+        # encoder extra parameters
+        self.register_buffer('pos_table', get_sinusoid_encoding_table(1+1+num_queries, hidden_dim)) # [CLS], qpos, a_seq
+        self.additional_pos_embed = nn.Embedding(1, hidden_dim) # learned position embedding for proprio and latent
+        self.feature_loss = feature_loss
+
+    def encode_images(self, image):
+        all_cam_features = []
+        all_cam_features_future = []
+        all_cam_pos = []
+        bs = image.shape[0]
+        if self.feature_loss:
+            image_future = image[:,self.cam_num:].clone()
+            image = image[:,:self.cam_num].clone()
+            image = torch.cat([image, image_future], axis=0) #cat along the batch dimension
+        for cam_id in range(self.cam_num):
+            features, pos = self.backbones[cam_id](image[:, cam_id])
+            project_feature = self.input_proj(features[0])
+            all_cam_features.append(project_feature[:bs])
+            all_cam_pos.append(pos[0])
+            if self.feature_loss:
+                all_cam_features_future.append(project_feature[bs:])
+        return all_cam_features, all_cam_features_future, all_cam_pos
+          
+    def forward(self, qpos, image):
+        assert self.backbones is not None
+        all_cam_features, all_cam_features_future, all_cam_pos = self.encode_images(image)
+        # proprioception features
+        proprio_input = self.input_proj_robot_state(qpos) #B, 512
+        # fold camera dimension into width dimension
+        src = torch.cat(all_cam_features, axis=3) #B, 512,12,26
+        pos = torch.cat(all_cam_pos, axis=3) #B, 512,12,26
+        hs = self.transformer_decoder(src, self.query_embed.weight, proprio_input=proprio_input, pos_embed=pos,
+                                       additional_pos_embed=self.additional_pos_embed.weight) #B, chunk_size, 512
+        hs_action = hs[:,-1*self.num_queries:,:].clone() #B, action_dim, 512
+        hs_img = hs[:,1:-1*self.num_queries,:].clone() #B, image_feature_dim, 512 #final image feature
+        hs_proprio = hs[:,[0],:].clone() #B, proprio_feature_dim, 512
+        a_hat = self.action_head(hs_action)
+        a_proprio = self.proprio_head(hs_proprio) #proprio head
+        if self.feature_loss:
+            # proprioception features
+            src_future = torch.cat(all_cam_features_future, axis=3) #B, 512,12,26
+            src_future = src_future.flatten(2).permute(2, 0, 1).transpose(1, 0) # B, 12*26, 512
+            hs_img = {'hs_img': hs_img, 'src_future': src_future}
+            
+        return a_hat, a_proprio, hs_img
 
 
 class DETRVAE(nn.Module):
@@ -260,15 +332,30 @@ def build_vae(args):
         backbone = build_backbone(args)
         backbones.append(backbone)
 
-    model = DETRVAE(
-        backbones,
-        transformer,
-        encoder,
-        state_dim=args.state_dim,
-        action_dim=args.action_dim,
-        num_queries=args.num_queries,
-        camera_names=args.camera_names,
-    )
+    if args.policy_class=="ACT":
+        transformer = build_transformer(args)
+        model = DETRVAE(
+            backbones,
+            transformer,
+            encoder,
+            state_dim=args.state_dim,
+            action_dim=args.action_dim,
+            num_queries=args.num_queries,
+            camera_names=args.camera_names,
+            feature_loss=args.feature_loss if hasattr(args, 'feature_loss') else False,
+        )
+    elif args.policy_class=="HIT":
+        transformer_decoder = build_transformer_decoder(args)
+
+        model = DETRVAE_Decoder(
+            backbones,
+            transformer_decoder,
+            state_dim=args.state_dim,
+            action_dim=args.action_dim,
+            num_queries=args.num_queries,
+            camera_names=args.camera_names,
+            feature_loss=args.feature_loss if hasattr(args, 'feature_loss') else False,
+        )
 
     n_parameters = sum(p.numel() for p in model.parameters() if p.requires_grad)
     print("number of parameters: %.2fM" % (n_parameters/1e6,))

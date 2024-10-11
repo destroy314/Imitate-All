@@ -90,6 +90,12 @@ def config_policy(args: dict):
             "lr": args["learning_rate"],
             "camera_names": camera_names,
         }
+    elif policy_class == "HIT":
+        policy_config = {
+            "lr_backbone": policy_args["lr_backbone"],
+            "lr": args["learning_rate"],
+            "camera_names": camera_names,
+        }
     elif policy_class == "CNNMLP":
         backbone = "resnet18"
         policy_config = {
