@@ -2,3 +2,7 @@ from .example_task import TASK_CONFIG, augment_images
 
 TASK_CONFIG["train"]["validate_every"] = 10
 TASK_CONFIG["train"]["dataset_dir"] = "data/original/Remove_lid_atm"
+
+# future image feature reconstruction loss
+TASK_CONFIG["common"]["policy_config"]["feature_loss"] = True
+TASK_CONFIG["common"]["policy_config"]["feature_loss_weight"] = 0.5

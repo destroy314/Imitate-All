@@ -101,7 +101,7 @@ class DETRVAE_Decoder(nn.Module):
 
 class DETRVAE(nn.Module):
     """ This is the DETR module that performs object detection """
-    def __init__(self, backbones, transformer, encoder, state_dim, action_dim, num_queries, camera_names):
+    def __init__(self, backbones, transformer, encoder, state_dim, action_dim, num_queries, camera_names, feature_loss=False):
         """ Initializes the model.
         Parameters:
             backbones: torch module of the backbone to be used. See backbone.py
@@ -110,17 +110,20 @@ class DETRVAE(nn.Module):
             action_dim: action dimension of the environment
             num_queries: number of object queries, ie detection slot. This is the maximal number of objects
                          DETR can detect in a single image. For COCO, we recommend 100 queries.
-            aux_loss: True if auxiliary decoding losses (loss at each decoder layer) are to be used.
+            camera_names: only use its length to index backbone and image
+            feature_loss: whether to use future image feature loss
         """
         super().__init__()
         self.num_queries = num_queries
         self.camera_names = camera_names
+        self.cam_num = len(camera_names)
         self.transformer = transformer
         self.encoder = encoder
         hidden_dim = transformer.d_model
         self.action_head = nn.Linear(hidden_dim, action_dim)
         self.is_pad_head = nn.Linear(hidden_dim, 1)
         self.query_embed = nn.Embedding(num_queries, hidden_dim)
+        self.feature_loss = feature_loss
         if backbones is not None:
             self.input_proj = nn.Conv2d(backbones[0].num_channels, hidden_dim, kernel_size=1)
             self.backbones = nn.ModuleList(backbones)
@@ -146,16 +149,24 @@ class DETRVAE(nn.Module):
 
     def encode_images(self, image):
         all_cam_features = []
+        all_cam_features_future = []
         all_cam_pos = []
-        for cam_id in range(len(self.camera_names)):
+        bs = image.shape[0]
+        if self.feature_loss:
+            image_future = image[:,self.cam_num:].clone()
+            image = image[:,:self.cam_num].clone()
+            image = torch.cat([image, image_future], axis=0) #cat along the batch dimension
+        for cam_id in range(self.cam_num):
             # print(image[:, cam_id].shape)
             features, pos = self.backbones[cam_id](image[:, cam_id])
             # TODO: check if this is correct
-            features = features[0]  # take the last layer feature
+            project_feature = self.input_proj(features[0])
+            all_cam_features.append(project_feature[:bs])
             pos = pos[0]
-            all_cam_features.append(self.input_proj(features))
             all_cam_pos.append(pos)
-        return all_cam_features, all_cam_pos
+            if self.feature_loss:
+                all_cam_features_future.append(project_feature[bs:])
+        return all_cam_features, all_cam_features_future, all_cam_pos
 
     def forward(self, qpos, image, env_state, actions=None, is_pad=None):
         """
@@ -197,15 +208,23 @@ class DETRVAE(nn.Module):
             latent_sample = torch.zeros([bs, self.latent_dim], dtype=torch.float32).to(qpos.device)
             latent_input = self.latent_out_proj(latent_sample)
 
+        hs_img = {}
         if self.backbones is not None:
             # Image observation features and position embeddings
-            all_cam_features, all_cam_pos = self.encode_images(image)
+            all_cam_features, all_cam_features_future, all_cam_pos = self.encode_images(image)
             # proprioception features
             proprio_input = self.input_proj_robot_state(qpos)
             # fold camera dimension into width dimension
             src = torch.cat(all_cam_features, axis=3)
             pos = torch.cat(all_cam_pos, axis=3)
-            hs = self.transformer(src, None, self.query_embed.weight, pos, latent_input, proprio_input, self.additional_pos_embed.weight)[0]
+            # action_dim, batch_size, chunk_size, hidden_dim
+            hs, hs_img = self.transformer(src, None, self.query_embed.weight, pos, latent_input, proprio_input, self.additional_pos_embed.weight)
+            hs = hs[0]
+            if self.feature_loss:
+                src_future = torch.cat(all_cam_features_future, axis=3) #B,512,15,20
+                src_future = src_future.flatten(2) # B,512,15*20
+                hs_img = hs_img.permute(2, 1, 0)
+                hs_img = {'hs_img': hs_img, 'src_future': src_future}
         else:
             qpos = self.input_proj_robot_state(qpos)
             env_state = self.input_proj_env_state(env_state)
@@ -213,7 +232,7 @@ class DETRVAE(nn.Module):
             hs = self.transformer(transformer_input, None, self.query_embed.weight, self.pos.weight)[0]
         a_hat = self.action_head(hs)
         is_pad_hat = self.is_pad_head(hs)
-        return a_hat, is_pad_hat, [mu, logvar]
+        return a_hat, is_pad_hat, [mu, logvar], hs_img
 
 
 class DETRVAEYHD(DETRVAE):
@@ -359,6 +378,9 @@ def build_vae(args):
 
     n_parameters = sum(p.numel() for p in model.parameters() if p.requires_grad)
     print("number of parameters: %.2fM" % (n_parameters/1e6,))
+    if hasattr(model,"encoder"):
+        n_parameters -= sum(p.numel() for p in model.encoder.parameters() if p.requires_grad)
+        print("number of parameters w/o encoder: %.2fM" % (n_parameters/1e6,))
 
     return model
 

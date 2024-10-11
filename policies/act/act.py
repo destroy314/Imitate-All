@@ -16,6 +16,7 @@ class ACTPolicy(nn.Module):
         self.model = model  # CVAE decoder
         self.kl_weight = args_override["kl_weight"]
         print(f"KL Weight {self.kl_weight}")
+        self.feature_loss_weight = args_override["feature_loss_weight"] if "feature_loss_weight" in args_override else 0.0
         self.temporal_ensembler = None
         try:
             if args_override["temporal_agg"]:
@@ -47,19 +48,22 @@ class ACTPolicy(nn.Module):
             assert is_pad is not None, "is_pad should not be None"
             is_pad = is_pad[:, : self.model.num_queries]
 
-            a_hat, is_pad_hat, (mu, logvar) = self.model(
+            a_hat, _, (mu, logvar), hs_img_dict = self.model(
                 qpos, image, env_state, actions, is_pad
             )
-            total_kld, dim_wise_kld, mean_kld = kl_divergence(mu, logvar)
+            total_kld, _, _ = kl_divergence(mu, logvar)
             loss_dict = dict()
             all_l1 = F.l1_loss(actions, a_hat, reduction="none")
             l1 = (all_l1 * ~is_pad.unsqueeze(-1)).mean()
             loss_dict["l1"] = l1
             loss_dict["kl"] = total_kld[0]
             loss_dict["loss"] = loss_dict["l1"] + loss_dict["kl"] * self.kl_weight
+            if self.model.feature_loss:
+                loss_dict["feature_loss"] = F.mse_loss(hs_img_dict["hs_img"], hs_img_dict["src_future"]).mean()
+                loss_dict["loss"] += self.feature_loss_weight * loss_dict["feature_loss"]
             return loss_dict
         else:  # inference time
-            a_hat, _, (_, _) = self.model(
+            a_hat, _, (_, _), _ = self.model(
                 qpos, image, env_state
             )  # no action, sample from prior
             if self.temporal_ensembler is None:
