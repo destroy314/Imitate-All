@@ -36,6 +36,7 @@ class EpisodicDataset(torch.utils.data.Dataset):
         self.augmentors = augmentors
         self.augment_images = augmentors.get("image", None)
         self.feature_loss = other_config["policy_config"].get("feature_loss", False)
+        self.use_task_emb = other_config["policy_config"].get("use_task_emb",False)
         self.chunk_size = other_config["policy_config"]["chunk_size"]
         self.__getitem__(0)
 
@@ -47,6 +48,9 @@ class EpisodicDataset(torch.utils.data.Dataset):
         episode_id = self.episode_ids[index]
         dataset_path = os.path.join(self.dataset_dir, f"episode_{episode_id}.hdf5")
         with h5py.File(dataset_path, "r") as root:
+            task_emb = np.zeros(())
+            if self.use_task_emb:
+                task_emb = torch.from_numpy(root["task_emb"][:]).float()
             compressed = root.attrs.get("compress", False)
             original_action_shape = root["/action"].shape
             episode_len = original_action_shape[0]
@@ -131,7 +135,7 @@ class EpisodicDataset(torch.utils.data.Dataset):
             "qpos_std"
         ]
 
-        return image_data, qpos_data, action_data, is_pad
+        return image_data, qpos_data, action_data, is_pad, task_emb
 
 
 def find_all_hdf5(dataset_dir, skip_mirrored_data=True):

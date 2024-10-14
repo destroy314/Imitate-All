@@ -29,8 +29,7 @@ def get_sinusoid_encoding_table(n_position, d_hid):
 
 class DETRVAE_Decoder(nn.Module):
     """ This is the decoder only transformer """
-    def __init__(self, backbones, transformer_decoder, state_dim, num_queries, camera_names, action_dim,
-                 feature_loss=False):
+    def __init__(self, backbones, transformer_decoder, state_dim, action_dim, task_dim, num_task_tokens, num_queries, camera_names, feature_loss=False):
         super().__init__()
         self.num_queries = num_queries
         self.camera_names = camera_names
@@ -42,6 +41,10 @@ class DETRVAE_Decoder(nn.Module):
         self.proprio_head = nn.Linear(hidden_dim, state_dim)
         self.is_pad_head = nn.Linear(hidden_dim, 1)
         self.query_embed = nn.Embedding(num_queries, hidden_dim)
+        self.feature_loss = feature_loss
+        self.task_proj = None
+        if task_dim != 0:
+            self.task_proj = nn.Linear(task_dim, hidden_dim * num_task_tokens)
         if backbones is not None:
             self.input_proj = nn.Conv2d(backbones[0].num_channels, hidden_dim, kernel_size=1)
             self.backbones = nn.ModuleList(backbones)
@@ -54,15 +57,14 @@ class DETRVAE_Decoder(nn.Module):
             self.backbones = None
         # encoder extra parameters
         self.register_buffer('pos_table', get_sinusoid_encoding_table(1+1+num_queries, hidden_dim)) # [CLS], qpos, a_seq
-        self.additional_pos_embed = nn.Embedding(1, hidden_dim) # learned position embedding for proprio and latent
-        self.feature_loss = feature_loss
+        self.additional_pos_embed = nn.Embedding(1 + num_task_tokens, hidden_dim) # learned position embedding for proprio, latent an task(optional)
 
-    def encode_images(self, image):
+    def encode_images(self, image, is_training):
         all_cam_features = []
         all_cam_features_future = []
         all_cam_pos = []
         bs = image.shape[0]
-        if self.feature_loss:
+        if self.feature_loss and is_training:
             image_future = image[:,self.cam_num:].clone()
             image = image[:,:self.cam_num].clone()
             image = torch.cat([image, image_future], axis=0) #cat along the batch dimension
@@ -75,22 +77,30 @@ class DETRVAE_Decoder(nn.Module):
                 all_cam_features_future.append(project_feature[bs:])
         return all_cam_features, all_cam_features_future, all_cam_pos
           
-    def forward(self, qpos, image):
+    def forward(self, qpos, image, task_emb=None):
         assert self.backbones is not None
-        all_cam_features, all_cam_features_future, all_cam_pos = self.encode_images(image)
+        is_training = (image.shape[1] == 2*self.cam_num) # train or val when feature_loss
+        all_cam_features, all_cam_features_future, all_cam_pos = self.encode_images(image, is_training)
         # proprioception features
         proprio_input = self.input_proj_robot_state(qpos) #B, 512
+        # task features
+        task_input = None
+        num_task_tokens = 0
+        if self.task_proj:
+            task_input = self.task_proj(task_emb)
+            task_input = task_input.reshape(-1, proprio_input.shape[-2], proprio_input.shape[-1]) # num_task_tokens,B,d
+            num_task_tokens = task_input.shape[0]
         # fold camera dimension into width dimension
         src = torch.cat(all_cam_features, axis=3) #B, 512,12,26
         pos = torch.cat(all_cam_pos, axis=3) #B, 512,12,26
-        hs = self.transformer_decoder(src, self.query_embed.weight, proprio_input=proprio_input, pos_embed=pos,
+        hs = self.transformer_decoder(src, self.query_embed.weight, proprio_input=proprio_input, task_input=task_input, pos_embed=pos,
                                        additional_pos_embed=self.additional_pos_embed.weight) #B, chunk_size, 512
         hs_action = hs[:,-1*self.num_queries:,:].clone() #B, action_dim, 512
-        hs_img = hs[:,1:-1*self.num_queries,:].clone() #B, image_feature_dim, 512 #final image feature
-        hs_proprio = hs[:,[0],:].clone() #B, proprio_feature_dim, 512
+        hs_img = hs[:,num_task_tokens+1:-1*self.num_queries,:].clone() #B, image_feature_dim, 512 #final image feature
+        hs_proprio = hs[:,[num_task_tokens],:].clone() #B, proprio_feature_dim, 512
         a_hat = self.action_head(hs_action)
         a_proprio = self.proprio_head(hs_proprio) #proprio head
-        if self.feature_loss:
+        if self.feature_loss and is_training:
             # proprioception features
             src_future = torch.cat(all_cam_features_future, axis=3) #B, 512,12,26
             src_future = src_future.flatten(2).permute(2, 0, 1).transpose(1, 0) # B, 12*26, 512
@@ -101,13 +111,15 @@ class DETRVAE_Decoder(nn.Module):
 
 class DETRVAE(nn.Module):
     """ This is the DETR module that performs object detection """
-    def __init__(self, backbones, transformer, encoder, state_dim, action_dim, num_queries, camera_names, feature_loss=False):
+    def __init__(self, backbones, transformer, encoder, state_dim, action_dim, task_dim, num_task_tokens, num_queries, camera_names, feature_loss=False):
         """ Initializes the model.
         Parameters:
             backbones: torch module of the backbone to be used. See backbone.py
             transformer: torch module of the transformer architecture. See transformer.py
             state_dim: robot state dimension of the environment
             action_dim: action dimension of the environment
+            task_dim: task embeding dimension, 0 if not use
+            num_task_tokens: num of task tokens
             num_queries: number of object queries, ie detection slot. This is the maximal number of objects
                          DETR can detect in a single image. For COCO, we recommend 100 queries.
             camera_names: only use its length to index backbone and image
@@ -124,6 +136,9 @@ class DETRVAE(nn.Module):
         self.is_pad_head = nn.Linear(hidden_dim, 1)
         self.query_embed = nn.Embedding(num_queries, hidden_dim)
         self.feature_loss = feature_loss
+        self.task_proj = None
+        if task_dim != 0:
+            self.task_proj = nn.Linear(task_dim, hidden_dim * num_task_tokens)
         if backbones is not None:
             self.input_proj = nn.Conv2d(backbones[0].num_channels, hidden_dim, kernel_size=1)
             self.backbones = nn.ModuleList(backbones)
@@ -145,14 +160,14 @@ class DETRVAE(nn.Module):
 
         # decoder extra parameters
         self.latent_out_proj = nn.Linear(self.latent_dim, hidden_dim) # project latent sample to embedding
-        self.additional_pos_embed = nn.Embedding(2, hidden_dim) # learned position embedding for proprio and latent
+        self.additional_pos_embed = nn.Embedding(2 + num_task_tokens, hidden_dim) # learned position embedding for proprio, latent an task(optional)
 
     def encode_images(self, image):
         all_cam_features = []
         all_cam_features_future = []
         all_cam_pos = []
         bs = image.shape[0]
-        if self.feature_loss:
+        if self.feature_loss and (image.shape[1] == 2*self.cam_num):
             image_future = image[:,self.cam_num:].clone()
             image = image[:,:self.cam_num].clone()
             image = torch.cat([image, image_future], axis=0) #cat along the batch dimension
@@ -168,12 +183,13 @@ class DETRVAE(nn.Module):
                 all_cam_features_future.append(project_feature[bs:])
         return all_cam_features, all_cam_features_future, all_cam_pos
 
-    def forward(self, qpos, image, env_state, actions=None, is_pad=None):
+    def forward(self, qpos, image, env_state, actions=None, is_pad=None, task_emb=None):
         """
         qpos: batch, qpos_dim
         image: batch, num_cam, channel, height, width
         env_state: ??? usually None
         actions: batch, seq, action_dim
+        task_emb: batch, task_dim
         """     
         if (image.ndim == 4):
             image = image.unsqueeze(1)
@@ -213,14 +229,19 @@ class DETRVAE(nn.Module):
             # Image observation features and position embeddings
             all_cam_features, all_cam_features_future, all_cam_pos = self.encode_images(image)
             # proprioception features
-            proprio_input = self.input_proj_robot_state(qpos)
+            proprio_input = self.input_proj_robot_state(qpos) # b,d
+            # task features
+            task_input = None
+            if self.task_proj:
+                task_input = self.task_proj(task_emb)
+                task_input = task_input.reshape(-1, bs, proprio_input.shape[-1]) # task_tokens,B,d
             # fold camera dimension into width dimension
             src = torch.cat(all_cam_features, axis=3)
             pos = torch.cat(all_cam_pos, axis=3)
             # action_dim, batch_size, chunk_size, hidden_dim
-            hs, hs_img = self.transformer(src, None, self.query_embed.weight, pos, latent_input, proprio_input, self.additional_pos_embed.weight)
-            hs = hs[0]
-            if self.feature_loss:
+            hs, hs_img = self.transformer(src, None, self.query_embed.weight, pos, latent_input, proprio_input, task_input, self.additional_pos_embed.weight)
+            hs = hs[0] # ???
+            if self.feature_loss and is_training:
                 src_future = torch.cat(all_cam_features_future, axis=3) #B,512,15,20
                 src_future = src_future.flatten(2) # B,512,15*20
                 hs_img = hs_img.permute(2, 1, 0)
@@ -359,6 +380,8 @@ def build_vae(args):
             encoder,
             state_dim=args.state_dim,
             action_dim=args.action_dim,
+            task_dim=args.task_emb_dim if hasattr(args,"task_emb_dim") else 0,
+            num_task_tokens=args.task_tokens if hasattr(args,"task_tokens") else (1 if hasattr(args,"task_emb_dim") else 0),
             num_queries=args.num_queries,
             camera_names=args.camera_names,
             feature_loss=args.feature_loss if hasattr(args, 'feature_loss') else False,
@@ -371,6 +394,8 @@ def build_vae(args):
             transformer_decoder,
             state_dim=args.state_dim,
             action_dim=args.action_dim,
+            task_dim=args.task_emb_dim if hasattr(args,"task_emb_dim") else 0,
+            num_task_tokens=args.task_tokens if hasattr(args,"task_tokens") else (1 if hasattr(args,"task_emb_dim") else 0),
             num_queries=args.num_queries,
             camera_names=args.camera_names,
             feature_loss=args.feature_loss if hasattr(args, 'feature_loss') else False,

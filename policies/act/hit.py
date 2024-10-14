@@ -33,7 +33,7 @@ class HITPolicy(nn.Module):
         if self.temporal_ensembler is not None:
             self.temporal_ensembler.reset()
     
-    def __call__(self, qpos, image, actions=None, is_pad=None):
+    def __call__(self, qpos, image, actions=None, is_pad=None, task_emb=None):
         if self.state_idx is not None:
             qpos = qpos[:, self.state_idx]
         
@@ -48,7 +48,7 @@ class HITPolicy(nn.Module):
             assert is_pad is not None, "is_pad should not be None"
             is_pad = is_pad[:, : self.model.num_queries]
 
-            a_hat, _, hs_img_dict = self.model(qpos, image)
+            a_hat, _, hs_img_dict = self.model(qpos, image, task_emb)
             loss_dict = dict()
             all_l1 = F.l1_loss(actions, a_hat, reduction="none")
             l1 = (all_l1 * ~is_pad.unsqueeze(-1)).mean()
@@ -60,7 +60,7 @@ class HITPolicy(nn.Module):
                 loss_dict["loss"] = loss_dict["l1"]
             return loss_dict
         else:  # inference time
-            a_hat, _, _ = self.model(qpos, image) # no action, sample from prior
+            a_hat, _, _ = self.model(qpos, image, task_emb) # no action, sample from prior
             if self.temporal_ensembler is None:
                 return a_hat
             else:

@@ -103,10 +103,11 @@ def make_optimizer(policy):
     return optimizer
 
 def forward_pass(data:torch.Tensor, policy):
-    image_data, qpos_data, action_data, is_pad = data
-    image_data, qpos_data, action_data, is_pad = image_data.cuda(), qpos_data.cuda(), action_data.cuda(), is_pad.cuda()
+    image_data, qpos_data, action_data, is_pad, task_data = data
+    image_data, qpos_data, action_data, is_pad, task_data = image_data.cuda(),\
+    qpos_data.cuda(), action_data.cuda(), is_pad.cuda(), task_data.cuda()
     # print("image_data.shape:", image_data.shape)
-    return policy(qpos_data, image_data, action_data, is_pad)  # TODO remove None
+    return policy(qpos_data, image_data, action_data, is_pad, task_data)  # TODO remove None
 
 def get_epoch_base(pretrain_path, epoch_base):
     if pretrain_path == "":
@@ -252,9 +253,12 @@ def plot_history(train_history, validation_history, num_epochs, stats_dir, seed)
         plot_path = os.path.join(stats_dir, f'train_val_{key}_seed_{seed}.png')
         plt.figure()
         train_values = [summary[key].item() for summary in train_history]
-        val_values = [summary[key].item() for summary in validation_history]
         plt.plot(np.linspace(0, num_epochs-1, len(train_history)), train_values, label='train')
-        plt.plot(np.linspace(0, num_epochs-1, len(validation_history)), val_values, label='validation')
+        try:
+            val_values = [summary[key].item() for summary in validation_history]
+            plt.plot(np.linspace(0, num_epochs-1, len(validation_history)), val_values, label='validation')
+        except:
+            print(f"{key} not in validation_history")
         # plt.ylim([-0.1, 1])
         plt.tight_layout()
         plt.legend()

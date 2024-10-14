@@ -46,7 +46,8 @@ class Transformer(nn.Module):
             if p.dim() > 1:
                 nn.init.xavier_uniform_(p)
 
-    def forward(self, src, mask, query_embed, pos_embed, latent_input=None, proprio_input=None, additional_pos_embed=None):
+    def forward(self, src, mask, query_embed, pos_embed, latent_input=None, proprio_input=None, task_input=None, additional_pos_embed=None):
+        task_tokens = 0
         # TODO flatten only when input has H and W
         if len(src.shape) == 4: # has H and W
             # flatten NxCxHxW to HWxNxC
@@ -56,10 +57,13 @@ class Transformer(nn.Module):
             query_embed = query_embed.unsqueeze(1).repeat(1, bs, 1)
             # mask = mask.flatten(1)
 
-            additional_pos_embed = additional_pos_embed.unsqueeze(1).repeat(1, bs, 1) # seq, bs, dim
+            additional_pos_embed = additional_pos_embed.unsqueeze(1).repeat(1, bs, 1) # 2[+num_task_tokens], bs, dim
             pos_embed = torch.cat([additional_pos_embed, pos_embed], axis=0)
 
-            addition_input = torch.stack([latent_input, proprio_input], axis=0)
+            addition_input = torch.stack([latent_input, proprio_input], axis=0) # 2, bs, dim
+            if task_input is not None:
+                task_tokens = task_input.shape[0]
+                addition_input = torch.cat([addition_input, task_input], axis=0) # 2+num_task_tokens, bs, dim
             src = torch.cat([addition_input, src], axis=0)
         else:
             assert len(src.shape) == 3
@@ -69,12 +73,13 @@ class Transformer(nn.Module):
             pos_embed = pos_embed.unsqueeze(1).repeat(1, bs, 1)
             query_embed = query_embed.unsqueeze(1).repeat(1, bs, 1)
 
-        tgt = torch.zeros_like(query_embed)
-        memory = self.encoder(src, src_key_padding_mask=mask, pos=pos_embed)
+        tgt = torch.zeros_like(query_embed) # chunk_size, bs, dim
+        memory = self.encoder(src, src_key_padding_mask=mask, pos=pos_embed) # seq, bs, dim
         hs = self.decoder(tgt, memory, memory_key_padding_mask=mask,
                           pos=pos_embed, query_pos=query_embed)
-        hs = hs.transpose(1, 2)
-        return hs, memory[2:].transpose(1, 2)
+        hs = hs.transpose(1, 2) # num_decder_layers, bs, chunk_size, dim
+        img_memory = memory[2+task_tokens:].transpose(1, 2)
+        return hs, img_memory
 
 class TransformerEncoder(nn.Module):
 
@@ -399,17 +404,20 @@ class Transformer_decoder(nn.Module):
             if p.dim() > 1:
                 nn.init.xavier_uniform_(p)
 
-    def forward(self, src, query_embed, proprio_input=None, additional_pos_embed=None, pos_embed=None):
+    def forward(self, src, query_embed, proprio_input=None, task_input=None, additional_pos_embed=None, pos_embed=None):
         # TODO flatten only when input has H and W
         if len(src.shape) == 4: # has H and W
             # flatten NxCxHxW to HWxNxC
             bs, c, h, w = src.shape
             src = src.flatten(2).permute(2, 0, 1) # typ. 300,4,512
             src = torch.cat([proprio_input[None], src], axis=0) # 301,4,512
+
+            if task_input is not None:
+                src = torch.cat([task_input, src], axis=0)  # 301+num_task_tokens,4,512
             
-            additional_pos_embed = additional_pos_embed.unsqueeze(1).repeat(1, bs, 1) # seq, bs, dim
+            additional_pos_embed = additional_pos_embed.unsqueeze(1).repeat(1, bs, 1) # 1[+num_task_tokens], bs, dim
             pos_embed = pos_embed.flatten(2).permute(2, 0, 1).repeat(1, bs, 1) # 300,4,512
-            pos_embed = torch.cat([additional_pos_embed, pos_embed], axis=0) # 301,4,512
+            pos_embed = torch.cat([additional_pos_embed, pos_embed], axis=0) # 301[+num_task_tokens],4,512
             
             query_embed = query_embed.unsqueeze(1).repeat(1, bs, 1) # 25,4,512
 
