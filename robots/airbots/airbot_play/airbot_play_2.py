@@ -16,6 +16,7 @@ class AIRBOTPlayConfig(object):
     # other
     joint_vel: float = 6.0
     default_action: List[float] = field(default_factory=lambda: [0] * 7)
+    mit: bool = False
 
 
 class AIRBOTPlay(object):
@@ -28,9 +29,14 @@ class AIRBOTPlay(object):
         print("cfg", cfg)
         self.robot = airbot.create_agent(*cfg)
         self._arm_joints_num = 6
-        self._joints_num = 7
+        self.joints_num = 7
+        self.dt = 1 / 25
         self.end_effector_open = 1
         self.end_effector_close = 0
+        if self.config.mit:
+            self.v = [0, 0, 0, 0, 0, 0]
+            self.kp = [120, 120, 120, 30, 30, 30]
+            self.kd = [1.2, 1.2, 1.2, 0.15, 0.15, 0.15]
 
     def _set_eef(self, target, ctrl_type):
         if len(target) == 1:
@@ -70,10 +76,13 @@ class AIRBOTPlay(object):
     ):
         if qvel is None:
             qvel = [self.config.joint_vel]
-        use_planning = blocking if use_planning is None else use_planning
-        self.robot.set_target_joint_q(
-            qpos[: self._arm_joints_num], use_planning, qvel[0], blocking
-        )
+        if self.config.mit:
+            self.robot.set_target_joint_mit(qpos[: self._arm_joints_num], self.v, self.kp, self.kd)
+        else:
+            use_planning = blocking if use_planning is None else use_planning
+            self.robot.set_target_joint_q(
+                qpos[: self._arm_joints_num], use_planning, qvel[0], blocking
+            )
         if len(qpos) - self._arm_joints_num > 0:
             self._set_eef(qpos[self._arm_joints_num :], "pos")
 

@@ -1,0 +1,11 @@
+python3 control_robot.py record \
+  --robot-path configurations/basic_configs/example/robot/airbots/play/airbot_play_2_demonstration.yaml \
+  --root data \
+  --repo-id raw/example \
+  --fps 25 \
+  --warmup-time-s 1 \
+  --num-frames-per-episode 500 \
+  --reset-time-s 1 \
+  --num-episodes 10000 \
+  --start-episode 0 \
+  --num-image-writers-per-camera 1
