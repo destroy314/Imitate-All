@@ -462,6 +462,7 @@ def record(
                 logging.info(f"Rerecording last episode {episode_index}")
             logging.info(f"Start recording episode {episode_index}")
             videos_dir = get_videos_dir(episode_index)
+            videos_dir.mkdir(parents=True, exist_ok=True)
             get_tmp_imgs_dir = (
                 lambda episode_index, key: get_videos_dir(episode_index)
                 / f"{key}_episode_{episode_index:06d}"

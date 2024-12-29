@@ -107,6 +107,7 @@ class ImageRecorderVideo:
                     raise Exception(f"Failed to read from camera {index}")
                 else:
                     assert tuple(frame.shape) == image_shape
+            self.cap[index].set(cv2.CAP_PROP_AUTO_WB, 1)
         if self.is_debug:
             self.timestamps = {index: deque(maxlen=50) for index in cameras}
         self.is_running = True

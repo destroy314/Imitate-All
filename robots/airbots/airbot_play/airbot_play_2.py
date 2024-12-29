@@ -16,7 +16,7 @@ class AIRBOTPlayConfig(object):
     # other
     joint_vel: float = 6.0
     default_action: List[float] = field(default_factory=lambda: [0] * 7)
-    mit: bool = False
+    mit: bool = False # 遥操作时不能设置，否则从臂会不受控制的乱动，原因未知
 
 
 class AIRBOTPlay(object):

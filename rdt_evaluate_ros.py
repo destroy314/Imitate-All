@@ -1,3 +1,16 @@
+"""
+Expose airbot play as agilex's ros interface so we can directlt reuse the rdt inference script
+Still need to change the init pos in RoboticsDiffusionTransformer/scripts/agilex_inference.py
+e.g.:
+left = [-0.05664911866188049,-0.26874953508377075,0.5613412857055664,1.483367681503296,-1.1999313831329346,-1.3498512506484985,0]
+right = [-0.05664911866188049,-0.26874953508377075,0.5613412857055664,-1.483367681503296,1.1999313831329346,1.3498512506484985,0]
+
+in Imitate-All:
+pthon rdt_evaluate_ros.py --arms x x --cams x x x
+in RoboticsDiffusionTransformer:
+sh inference.sh
+"""
+
 import rospy
 from sensor_msgs.msg import Image, JointState
 from std_msgs.msg import Header
@@ -59,8 +72,6 @@ class ROSPublisherSubscriber:
 
         # raitos defined in RoboticDiffusionTransformerModel._format_joint_to_state and ._unformat_action_to_joint
         # so we don't have to modify the original RDT/scripts/agilex_model.py
-        # assume eef joint of airbot play from sdk are normalized to [0,1]
-        # TODO check this
         self.rdt_format_l = np.array([1, 1, 1, 1, 1, 1, 4.7908])
         self.rdt_format_r = np.array([1, 1, 1, 1, 1, 1, 4.7888])
         self.rdt_unformat_l = np.array([1, 1, 1, 1, 1, 1, 11.8997])
