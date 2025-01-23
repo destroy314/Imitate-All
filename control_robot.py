@@ -40,9 +40,9 @@ import numpy as np
 
 def save_image(img: np.ndarray, frame_index, images_dir: Path):
     img = Image.fromarray(img)
-    path = images_dir / f"frame_{frame_index:06d}.png"
+    path = images_dir / f"frame_{frame_index:06d}.jpg"
     path.parent.mkdir(parents=True, exist_ok=True)
-    img.save(str(path), quality=100)
+    img.save(str(path), quality=85)
 
 
 def none_or_int(value):
@@ -255,11 +255,31 @@ def record(
             "Headless environment detected. On-screen cameras display and keyboard inputs will not be available."
         )
 
+    start_images = {}
+    def update_start_images():
+        nonlocal start_images
+        observation = robot.capture_observation()
+        image_keys = [key for key in observation if "image" in key]
+        for key in image_keys:
+            if key not in start_images:
+                start_images[key] = []
+            start_images[key].append(observation[key])
+            if len(start_images[key]) > 10:
+                start_images[key].pop(0)
+    
     def show_cameras(robot: Robot):
         observation = robot.capture_observation()
         image_keys = [key for key in observation if "image" in key]
         for key in image_keys:
-            cv2.imshow(key, cv2.cvtColor(observation[key], cv2.COLOR_RGB2BGR))
+            show = observation[key]
+            hist_start = start_images.get(key, [np.zeros_like(observation[key])])
+            hist_start = [h.astype(np.int32) - show.astype(np.int32) for h in hist_start]
+            hist_start = np.sum(hist_start, axis=0)
+            hist_start += show.astype(np.int32)
+            hist_start = np.clip(hist_start, 0, 255).astype(np.uint8)
+            show = np.mean([show, hist_start], axis=0).astype(np.uint8)
+            show = cv2.cvtColor(show, cv2.COLOR_RGB2BGR)
+            cv2.imshow(key, show)
         cv2.waitKey(1)
 
     # Allow to exit early while recording an episode or resetting the environment,
@@ -325,6 +345,7 @@ def record(
                 if key == keyboard.Key.space:
                     if (not self.is_recording()) and self.set_record_event():
                         robot.enter_passive_mode()
+                        update_start_images()
                         # print("Start recording data")
                     else:
                         print(

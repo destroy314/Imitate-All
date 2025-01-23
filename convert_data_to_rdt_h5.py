@@ -5,8 +5,9 @@ import json
 import cv2
 from tqdm import tqdm
 
-def save_data(low_dim, image_paths, write_path):
-    camera_names = ['cam_high', 'cam_left_wrist', 'cam_right_wrist']
+def save_data(low_dim, image_paths, write_path, right_only):
+    camera_names = ['cam_high', 'cam_left_wrist', 'cam_right_wrist'] \
+    if not right_only else ['cam_high', 'cam_right_wrist']
 
     data_size = len(low_dim['action/arm/joint_position'])
     data_dict = {
@@ -23,33 +24,44 @@ def save_data(low_dim, image_paths, write_path):
     gripper_actions = low_dim['action/eef/joint_position']
 
     for i in range(data_size):
-        data_dict['/observations/qpos'].append(qpos[i][:6]+gripper_pos[i][0:1]+qpos[i][6:]+gripper_pos[i][1:2])
-
-        data_dict['/action'].append(actions[i][:6]+gripper_actions[i][0:1]+actions[i][6:]+gripper_actions[i][1:2])
+        if not right_only:
+            data_dict['/observations/qpos'].append(qpos[i][:6]+gripper_pos[i][0:1]+qpos[i][6:]+gripper_pos[i][1:2])
+            data_dict['/action'].append(actions[i][:6]+gripper_actions[i][0:1]+actions[i][6:]+gripper_actions[i][1:2])
+        else:
+            data_dict['/observations/qpos'].append(qpos[i]+gripper_pos[i])
+            data_dict['/action'].append(actions[i]+gripper_actions[i])
 
         for cam_name, img_path in zip(camera_names, image_paths):
-            img = cv2.imread(f"{img_path}/frame_{i:06}.png")
-            cv2.imencode()
+            if os.path.exists(f"{img_path}/frame_{i:06}.png"):
+                img = cv2.imencode(".jpg",cv2.imread(f"{img_path}/frame_{i:06}.png"), [int(cv2.IMWRITE_JPEG_QUALITY), 85])[1]
+            else:
+                img = cv2.imread(f"{img_path}/frame_{i:06}.jpg")
             data_dict[f'/observations/images/{cam_name}'].append(img)
     
     with h5py.File(write_path + '.hdf5', 'w', rdcc_nbytes=1024**2*2) as root:
         obs = root.create_group('observations')
         image = obs.create_group('images')
         for cam_name in camera_names:
-            _ = image.create_dataset(cam_name, (data_size, 480, 640, 3), dtype='uint8',
-                                         chunks=(1, 480, 640, 3), )
+            _ = image.create_dataset(cam_name, (data_size,), dtype='S40000', chunks=True)
+            # _ = image.create_dataset(cam_name, (data_size, 480, 640, 3), dtype='uint8',
+            #                              chunks=(1, 480, 640, 3), )
 
-        _ = obs.create_dataset('qpos', (data_size, 14))
-        _ = root.create_dataset('action', (data_size, 14))
+        if not right_only:
+            _ = obs.create_dataset('qpos', (data_size, 14))
+            _ = root.create_dataset('action', (data_size, 14))
+        else:
+            _ = obs.create_dataset('qpos', (data_size, 8))
+            _ = root.create_dataset('action', (data_size, 8))
 
         for name, array in data_dict.items():  
             root[name][...] = array
 
 def main():
+    right_only = False
     raw_dir = "data/raw"
-    name = "transfer_block"
+    name = "put_blocks_in_box"
     dataset_dir = "data/dataset"
-    os.makedirs(dataset_dir, exist_ok=True)
+    os.makedirs(f"{dataset_dir}/{name}", exist_ok=True)
     raw_data_dir = f"{raw_dir}/{name}/"
     episodes_dir = os.listdir(raw_data_dir)
     episodes_dir = sorted([x for x in episodes_dir if x.isdigit()])
@@ -59,7 +71,7 @@ def main():
         imgs_dirs = sorted([f"{episode_dir}/{x}" for x in imgs_dirs if os.path.isdir(f"{episode_dir}/{x}")])
         with open(f"{episode_dir}/low_dim.json", 'r') as f:
             low_dim = json.load(f)
-        save_data(low_dim, imgs_dirs, f"{dataset_dir}/{name}/{episode}")
+        save_data(low_dim, imgs_dirs, f"{dataset_dir}/{name}/{episode}", right_only)
     
     # instruction_dict = {
     #     'instruction': "Pick up the red block and place it on table with other arm.",

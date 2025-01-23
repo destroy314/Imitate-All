@@ -25,16 +25,23 @@ from envs.airbot_play_real_env import make_env
 class ROSPublisherSubscriber:
     def __init__(self, args):
         rospy.init_node('ros_publisher_subscriber', anonymous=True)
+        self.right = args.right
 
-        left_cfg = AIRBOTPlayConfig(can_bus=f"can{args.arms[0]}", eef_mode="gripper", mit=args.mit)
         right_cfg = AIRBOTPlayConfig(can_bus=f"can{args.arms[1]}", eef_mode="gripper", mit=args.mit)
-        left_robot = AIRBOTPlay(left_cfg)
         right_robot = AIRBOTPlay(right_cfg)
-        robots = [left_robot, right_robot]
+        if not self.right:
+            left_cfg = AIRBOTPlayConfig(can_bus=f"can{args.arms[0]}", eef_mode="gripper", mit=args.mit)
+            left_robot = AIRBOTPlay(left_cfg)
+            robots = [left_robot, right_robot]
+        else:
+            robots = [right_robot]
 
         cameras = {
             'front': args.cams[0],
             'left': args.cams[1],
+            'right': args.cams[2],
+        } if not self.right else {
+            'front': args.cams[0],
             'right': args.cams[2],
         }
 
@@ -44,8 +51,7 @@ class ROSPublisherSubscriber:
             cameras=cameras,
         )
 
-        reset_position = [0] * 14
-        self.env.set_reset_position(reset_position)
+        self.env.set_reset_position([0] * 14)
         self.env.reset()
 
         self.bridge = CvBridge()
@@ -61,8 +67,9 @@ class ROSPublisherSubscriber:
             'right': rospy.Publisher('/puppet/joint_right', JointState, queue_size=10),
         }
 
-        rospy.Subscriber('/master/joint_left', JointState, self.joint_left_callback)
-        rospy.Subscriber('/master/joint_right', JointState, self.joint_right_callback)
+        self.last = time.time()
+        self.cmd_limit = args.cmd_limit
+        rospy.Subscriber('/master/joint', JointState, self.joint_callback)
 
         self.action_lock = threading.Lock()
         self.current_action = self.env.get_qpos().copy()
@@ -70,7 +77,7 @@ class ROSPublisherSubscriber:
         self.left_joint_names = ['joint0', 'joint1', 'joint2', 'joint3', 'joint4', 'joint5', 'joint6']
         self.right_joint_names = ['joint0', 'joint1', 'joint2', 'joint3', 'joint4', 'joint5', 'joint6']
 
-        # raitos defined in RoboticDiffusionTransformerModel._format_joint_to_state and ._unformat_action_to_joint
+        # ratios defined in RoboticDiffusionTransformerModel._format_joint_to_state and ._unformat_action_to_joint
         # so we don't have to modify the original RDT/scripts/agilex_model.py
         self.rdt_format_l = np.array([1, 1, 1, 1, 1, 1, 4.7908])
         self.rdt_format_r = np.array([1, 1, 1, 1, 1, 1, 4.7888])
@@ -92,23 +99,21 @@ class ROSPublisherSubscriber:
         qpos /= self.rdt_unformat_l if arm == "left" else self.rdt_unformat_r
         return qpos
 
-    def joint_left_callback(self, msg):
-        with self.action_lock:
-            if len(msg.position) != len(self.left_joint_names):
-                rospy.logwarn("Received joint_left command with unexpected number of positions")
-                return
-            self.current_action[:7] = self.unformat_qpos(msg.position, "left")
-            rospy.loginfo(f"L: {self.current_action[:7]}")
-            self.apply_action()
+    def joint_callback(self,msg):
+        if self.right:
+            self.current_action = self.unformat_qpos(msg.position[7:14], "right")
+        else:
+            self.current_action[:7] = self.unformat_qpos(msg.position[:7], "left")
+            self.current_action[7:14] = self.unformat_qpos(msg.position[7:14], "right")
 
-    def joint_right_callback(self, msg):
-        with self.action_lock:
-            if len(msg.position) != len(self.right_joint_names):
-                rospy.logwarn("Received joint_right command with unexpected number of positions")
-                return
-            self.current_action[7:14] = self.unformat_qpos(msg.position, "right")
-            rospy.loginfo(f"R: {self.current_action[7:14]}")
-            self.apply_action()
+        dt = time.time() - self.last
+        self.last = time.time()
+        rospy.loginfo(f"fps={1/dt:.1f} [{' '.join([f'{self.current_action[i]:.3f}' for i in range(14)])}]")
+        if self.cmd_limit > 0 and dt < 1/self.cmd_limit:
+            rospy.logwarn(f"Command rate exceeds limit {self.cmd_limit} fps, wait {1/self.cmd_limit - dt:.3f} s")
+            time.sleep(1/self.cmd_limit - dt)
+        
+        self.apply_action()
 
     def apply_action(self):
         action = self.current_action.copy()
@@ -127,16 +132,7 @@ class ROSPublisherSubscriber:
                     rospy.logerr(f"Failed to publish image {cam_name}: {e}")
 
             qpos = self.env.get_qpos()
-            left_qpos = self.format_qpos(qpos[:7], "left")
             right_qpos = self.format_qpos(qpos[7:14], "right")
-
-            joint_state_left = JointState()
-            joint_state_left.header = Header()
-            joint_state_left.header.stamp = rospy.Time.now()
-            joint_state_left.name = self.left_joint_names
-            joint_state_left.position = left_qpos
-            self.joint_publishers['left'].publish(joint_state_left)
-
             joint_state_right = JointState()
             joint_state_right.header = Header()
             joint_state_right.header.stamp = rospy.Time.now()
@@ -144,25 +140,36 @@ class ROSPublisherSubscriber:
             joint_state_right.position = right_qpos
             self.joint_publishers['right'].publish(joint_state_right)
 
+            if not self.right:
+                left_qpos = self.format_qpos(qpos[:7], "left")
+                joint_state_left = JointState()
+                joint_state_left.header = Header()
+                joint_state_left.header.stamp = rospy.Time.now()
+                joint_state_left.name = self.left_joint_names
+                joint_state_left.position = left_qpos
+                self.joint_publishers['left'].publish(joint_state_left)
+
             self.publish_rate.sleep()
 
 def get_arguments():
     import argparse
     parser = argparse.ArgumentParser(description="ROS Publisher and Subscriber for RealEnv")
     parser.add_argument('--pub_rate', type=int, default=50, help='Rate to publish images and joint states (Hz)')
-    parser.add_argument('--arms', nargs='+', type=int, default=[0, 1],
+    parser.add_argument('--arms', nargs='+', type=int, default=[2, 3],
                         help='List of canX numbers for left, right arm (ip link show | grep can)')
     parser.add_argument('--cams', nargs='+', type=int, default=[0, 2, 4],
                         help='List of /dev/videoX numbers for front, left, right camera (ls /dev/video*)')
     parser.add_argument('--mit', action='store_true', help='Use impedence control')
+    parser.add_argument('--right', action='store_true', help='Use right arm only')
+    parser.add_argument('--cmd_limit', type=int, default=0, help='Ensure joint command execution rate not exceed this limit (fps)')
     args = parser.parse_args()
-    assert len(args.arms) == 2 and len(args.cams) == 3, "Expected 2 arms and 3 cameras"
+    assert len(args.arms) == 2 and len(args.cams) == 3, "Expected 2 arms and 3 cameras (even using --right)"
     return args
 
 def main():
     args = get_arguments()
     try:
-        node = ROSPublisherSubscriber(args)
+        _ = ROSPublisherSubscriber(args)
         rospy.spin()
     except rospy.ROSInterruptException:
         pass
