@@ -108,7 +108,7 @@ class ROSPublisherSubscriber:
 
         dt = time.time() - self.last
         self.last = time.time()
-        rospy.loginfo(f"fps={1/dt:.1f} [{' '.join([f'{self.current_action[i]:.3f}' for i in range(14)])}]")
+        rospy.loginfo(f"fps={1/dt:.1f} [{' '.join([f'{self.current_action[i]:.3f}' for i in range(7 if self.right else 14)])}]")
         if self.cmd_limit > 0 and dt < 1/self.cmd_limit:
             rospy.logwarn(f"Command rate exceeds limit {self.cmd_limit} fps, wait {1/self.cmd_limit - dt:.3f} s")
             time.sleep(1/self.cmd_limit - dt)
@@ -122,6 +122,8 @@ class ROSPublisherSubscriber:
     def publish_loop(self):
         while not rospy.is_shutdown():
             images = self.env.get_images()
+            if self.right:
+                images.update({'left': np.zeros_like(images['front'])})
             for cam_name, img in images.items():
                 try:
                     ros_img = self.bridge.cv2_to_imgmsg(img, encoding="bgr8")
@@ -132,7 +134,12 @@ class ROSPublisherSubscriber:
                     rospy.logerr(f"Failed to publish image {cam_name}: {e}")
 
             qpos = self.env.get_qpos()
-            right_qpos = self.format_qpos(qpos[7:14], "right")
+            if self.right:
+                left_qpos = np.zeros(7)
+                right_qpos = self.format_qpos(qpos[:7], "right")
+            else:
+                left_qpos = self.format_qpos(qpos[:7], "left")
+                right_qpos = self.format_qpos(qpos[7:14], "right")
             joint_state_right = JointState()
             joint_state_right.header = Header()
             joint_state_right.header.stamp = rospy.Time.now()
@@ -140,14 +147,12 @@ class ROSPublisherSubscriber:
             joint_state_right.position = right_qpos
             self.joint_publishers['right'].publish(joint_state_right)
 
-            if not self.right:
-                left_qpos = self.format_qpos(qpos[:7], "left")
-                joint_state_left = JointState()
-                joint_state_left.header = Header()
-                joint_state_left.header.stamp = rospy.Time.now()
-                joint_state_left.name = self.left_joint_names
-                joint_state_left.position = left_qpos
-                self.joint_publishers['left'].publish(joint_state_left)
+            joint_state_left = JointState()
+            joint_state_left.header = Header()
+            joint_state_left.header.stamp = rospy.Time.now()
+            joint_state_left.name = self.left_joint_names
+            joint_state_left.position = left_qpos
+            self.joint_publishers['left'].publish(joint_state_left)
 
             self.publish_rate.sleep()
 

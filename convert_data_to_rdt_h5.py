@@ -50,8 +50,8 @@ def save_data(low_dim, image_paths, write_path, right_only):
             _ = obs.create_dataset('qpos', (data_size, 14))
             _ = root.create_dataset('action', (data_size, 14))
         else:
-            _ = obs.create_dataset('qpos', (data_size, 8))
-            _ = root.create_dataset('action', (data_size, 8))
+            _ = obs.create_dataset('qpos', (data_size, 7))
+            _ = root.create_dataset('action', (data_size, 7))
 
         for name, array in data_dict.items():  
             root[name][...] = array
