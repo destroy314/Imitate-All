@@ -202,6 +202,7 @@ def record(
     reset_time_s=5,
     num_episodes=50,
     video=True,
+    overlay_start_images=False,
     num_image_writers_per_camera=4,
     force_override=False,
     start_episode=-1,
@@ -272,12 +273,13 @@ def record(
         image_keys = [key for key in observation if "image" in key]
         for key in image_keys:
             show = observation[key]
-            hist_start = start_images.get(key, [np.zeros_like(observation[key])])
-            hist_start = [h.astype(np.int32) - show.astype(np.int32) for h in hist_start]
-            hist_start = np.sum(hist_start, axis=0)
-            hist_start += show.astype(np.int32)
-            hist_start = np.clip(hist_start, 0, 255).astype(np.uint8)
-            show = np.mean([show, hist_start], axis=0).astype(np.uint8)
+            if overlay_start_images:    
+                hist_start = start_images.get(key, [np.zeros_like(observation[key])])
+                hist_start = [h.astype(np.int32) - show.astype(np.int32) for h in hist_start]
+                hist_start = np.sum(hist_start, axis=0)
+                hist_start += show.astype(np.int32)
+                hist_start = np.clip(hist_start, 0, 255).astype(np.uint8)
+                show = np.mean([show, hist_start], axis=0).astype(np.uint8)
             show = cv2.cvtColor(show, cv2.COLOR_RGB2BGR)
             cv2.imshow(key, show)
         cv2.waitKey(1)
