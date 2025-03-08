@@ -14,6 +14,19 @@ from robots.airbots.airbot_play.airbot_play_2 import AIRBOTPlay, AIRBOTPlayConfi
 from envs.airbot_play_real_env import make_env
 
 
+PROMPT_DICT = {
+    0: None, # 使用config中的default_prompt(必须存在)
+    1: "Pick up the block on the table and place it in the red square area.",
+    # 2: "Stack the three blocks in the red rectangle.",
+    2: "Use left and right arm to stack the three blocks in the red rectangle.",
+    3: "Nest all paper cups together.",
+    4: "Flatten the towel and fold it along the long side.",
+    5: "Use right arm to pick up the blocks, handed to left arm, and place them in the tray by color.",
+    6: "Wipe the whiteboard clean with right arm.",
+    7: "Stop moving.",
+}
+INIT_PROMPT = 3
+
 @dataclasses.dataclass
 class Args:
     host: str = "0.0.0.0"
@@ -28,7 +41,7 @@ class Args:
 
     cams: list[int] = dataclasses.field(default_factory=lambda:[0, 2, 4])
     arms: list[int] = dataclasses.field(default_factory=lambda:[2, 3])
-    right: bool = True
+    right: bool = False
     mit: bool = False
 
     arm_step: list[float] = dataclasses.field(default_factory=lambda:[0.01, 0.01, 0.01, 0.01, 0.01, 0.01, 0.2])
@@ -69,7 +82,7 @@ def main(args: Args) -> None:
     if not right:
         left_cfg = AIRBOTPlayConfig(can_bus=f"can{args.arms[0]}", eef_mode="gripper", mit=args.mit)
         left_robot = AIRBOTPlay(left_cfg)
-        robots = [right_robot, left_robot]
+        robots = [left_robot, right_robot]
     else:
         robots = [right_robot]
     # env的输入输出(state和action)的长度和顺序取决于robots列表
@@ -94,31 +107,39 @@ def main(args: Args) -> None:
         cameras=cameras,
     )
 
-    env.set_reset_position(args.right_init + args.left_init) # 多余的reset_position不会被使用
+    env.set_reset_position(args.left_init + args.right_init) # 多余的reset_position不会被使用
     ts = env.reset(sleep_time=1)
     pre_action = _parse_action(ts.observation["qpos"])
 
     policy = _websocket_client_policy.WebsocketClientPolicy(
         host=args.host,
         port=args.port,
-    )  # 输入输出都是右-左顺序
+    )  # 输入输出都是左-右顺序
     logging.info(f"Server metadata: {policy.get_server_metadata()}")
 
-    obs = _parse_obs(ts)
+    obs = _parse_obs(ts.observation)
     policy.infer(obs)
 
     # pause handler
     paused = False
     reset = False
+    prompt = PROMPT_DICT[INIT_PROMPT]
 
     def on_press(key):
         nonlocal paused
         nonlocal reset
+        nonlocal prompt
         try:
             if key.char == "p":
                 paused = not paused
             elif key.char == "r":
                 reset = True
+            elif str(key.char).isdigit():
+                prompt_idx = int(key.char)
+                try:
+                    prompt = PROMPT_DICT[prompt_idx]
+                except:
+                    prompt = "Stop moving."
         except Exception:
             pass
 
@@ -126,20 +147,27 @@ def main(args: Args) -> None:
     listener.start()
 
     for _ in range(args.max_episodes):
-        input("Policy ready. Press Enter to inference.")
+        input("\n\nPress Enter to start.")
         action_buffer = np.zeros([args.predict_horizon, 14])
         t = 0
         last_step_time = time.time()
         for _ in range(args.max_steps):
             if t % args.action_horizon == 0:
+                time.sleep(0.4) # 等待动作执行完、机械臂状态更新，否则输出会从过去的位置开始
                 start = time.time()
-                obs = _parse_obs(ts)
+                raw_obs = env._get_observation()
+                obs = _parse_obs(raw_obs, prompt=prompt)
                 result = policy.infer(obs)
                 action_buffer = _parse_action(result["actions"])
-                print("Inferring time:", time.time() - start)
+                print("\033[A\033[A\033[K", end="")
+                print(f"Prompt: {prompt}")
+                print(f"Inferring time: {time.time() - start:.2f} s")
             action = action_buffer[t % args.action_horizon]
 
             interp_actions = _interpolate_action(args.arm_step, pre_action, action)
+            if len(interp_actions) > 8:
+                print("skip")
+                continue
             pre_action = action.copy()
             for act in interp_actions:
                 ts = env.step(action=act, get_obs=True)
@@ -151,7 +179,12 @@ def main(args: Args) -> None:
                     last_step_time = time.time()
                 else:
                     last_step_time = now
-            print(f"t={t}, action=[{' '.join([f'{a:.2f}' for a in action])}]", end="\r")
+
+                if reset:
+                    break
+
+            print(f"t={t % args.action_horizon}({t}), "
+                  f"action=[{' '.join([f'{a:.2f}' for a in action])}]", end="\r")
             t += 1
 
             if reset:
@@ -162,24 +195,26 @@ def main(args: Args) -> None:
                 break
 
 
-def parse_obs(ts, right) -> dict:
-    raw_obs = ts.observation
-
+def parse_obs(raw_obs, right, prompt = "Stop moving.") -> dict:
     images = {}
     for cam_name in raw_obs["images"]:
         img = image_tools.resize_with_pad(raw_obs["images"][cam_name], 224, 224)
         images[cam_name] = einops.rearrange(img, "h w c -> c h w")
 
-    # state: np.array(14) 右-左顺序
+    # state: np.array(14) 左-右顺序
     state = raw_obs["qpos"]
     if right:
         state = np.concatenate([state, np.zeros_like(state)], axis=0)
 
-    return {
+    obs = {
         "state": state,
         "images": images,
-        "prompt": "Pick up the block on the table and place it in the red square area.",
     }
+
+    if prompt is not None:
+        obs["prompt"] = prompt
+
+    return obs
 
 
 def parse_action(result, right):
@@ -208,4 +243,4 @@ if __name__ == "__main__":
     try:
         main(tyro.cli(Args))
     except KeyboardInterrupt:
-        pass
+        pass # 否则机械臂不会正常下电
