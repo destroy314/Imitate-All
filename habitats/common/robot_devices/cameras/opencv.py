@@ -237,6 +237,7 @@ class OpenCVCamera:
         else:
             tmp_camera = cv2.VideoCapture(self.camera_index)
 
+        time.sleep(0.1)
         is_camera_open = tmp_camera.isOpened()
         # Release camera to make it accessible for `find_camera_indices`
         del tmp_camera

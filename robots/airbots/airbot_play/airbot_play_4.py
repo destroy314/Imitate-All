@@ -114,13 +114,13 @@ class AIRBOTPlay(object):
         #     assert self.robot.online_servo_mode(), "online_servo_mode mode failed"          # 没有online_servo_mode
         self._state_mode = "active"
 
-    def send_action(self, action, wait=False):
+    def send_action(self, action, vel=0.5, wait=False):
         assert self._state_mode == "active", "Robot is not in active mode"
         if self.config.arm_type == "replay":
             return
         else:
             assert self.robot.set_target_joint_q(
-                action[:6], blocking=wait, vel=0.5, use_planning=False
+                action[:6], blocking=wait, vel=vel, use_planning=False
             ), "set target joint q failed"
             if self.robot.params["eef_type"] not in ["none", "E2B"]:
                 # assert self.robot.set_target_end(action[6]), "set target end failed"

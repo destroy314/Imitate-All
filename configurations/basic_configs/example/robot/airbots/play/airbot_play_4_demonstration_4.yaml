@@ -1,0 +1,58 @@
+_target_: robots.airbots.airbot_play.airbot_play_4_demonstration.AIRBOTPlayDemonstration
+
+groups:
+  g1: # left
+    leader:
+      _target_: robots.airbots.airbot_play.airbot_play_4.AIRBOTPlayConfig
+      port: 50004
+      start_arm_joint_position:
+        [
+          -0.05664911866188049,
+          -0.26874953508377075,
+          0.5613412857055664,
+          1.483367681503296,
+          -1.1999313831329346,
+          -1.3498512506484985,
+        ]
+    followers:
+      - _target_: robots.airbots.airbot_play.airbot_play_4.AIRBOTPlayConfig
+        port: 50002
+  g2: # right
+    leader:
+      _target_: robots.airbots.airbot_play.airbot_play_4.AIRBOTPlayConfig
+      port: 50005
+      start_arm_joint_position:
+        [
+          -0.05664911866188049,
+          -0.26874953508377075,
+          0.5613412857055664,
+          -1.483367681503296,
+          1.1999313831329346,
+          1.3498512506484985,
+        ]
+    followers:
+      - _target_: robots.airbots.airbot_play.airbot_play_4.AIRBOTPlayConfig
+        port: 50003
+
+# Troubleshooting: If one of your opencv cameras freeze during
+# data recording due to bandwidth limit, you might need to plug the camera
+# on another USB hub or PCIe card.
+cameras:
+  cam1:
+    _target_: habitats.common.robot_devices.cameras.opencv.OpenCVCamera
+    camera_index: 0
+    fps: 25
+    width: 640
+    height: 480
+  cam2:
+    _target_: habitats.common.robot_devices.cameras.opencv.OpenCVCamera
+    camera_index: 2
+    fps: 25
+    width: 640
+    height: 480
+  cam3:
+    _target_: habitats.common.robot_devices.cameras.opencv.OpenCVCamera
+    camera_index: 4
+    fps: 25
+    width: 640
+    height: 480
