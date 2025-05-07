@@ -9,6 +9,7 @@ from openpi_client import image_tools
 from openpi_client import websocket_client_policy as _websocket_client_policy
 import tyro
 from pynput import keyboard
+import cv2
 
 from airbot_py.airbot_play import AirbotPlay
 from envs.airbot_play_real_env import RealEnv
@@ -34,8 +35,7 @@ class Args:
     host: str = "0.0.0.0"
     port: int = 8000
 
-    predict_horizon: int = 32
-    action_horizon: int = 32
+    action_horizon: int = 30
 
     max_episodes: int = 100
     max_steps: int = 10000
@@ -76,7 +76,7 @@ class Args:
 
 class AssembledRobotWrapper(AssembledRobot):
     def __init__(self, airbot_player):
-        self.robot = airbot_player
+        self.robot: AirbotPlay = airbot_player
         self._arm_joints_num = 6
         self.joints_num = 7
         self.dt = 1 / 25
@@ -176,7 +176,6 @@ def main(args: Args) -> None:
         input("\n\nPress Enter to start.")
         if end:
             break
-        action_buffer = np.zeros([args.predict_horizon, 14])
         t = 0
         last_step_time = time.time()
         for _ in range(args.max_steps):
@@ -191,6 +190,10 @@ def main(args: Args) -> None:
                 print(f"Prompt: {prompt}")
                 print(f"Inferring time: {time.time() - start:.2f} s")
             action = action_buffer[t % args.action_horizon]
+
+            # fix an arm
+            # action[:7]=args.left_init
+            # action[7:]=args.right_init
 
             interp_actions = interpolate_action(args.arm_step, pre_action, action)
             # if len(interp_actions) > 8:
@@ -230,6 +233,7 @@ def parse_obs(raw_obs, prompt = "Stop moving.") -> dict:
     images = {}
     for cam_name in raw_obs["images"]:
         img = image_tools.resize_with_pad(raw_obs["images"][cam_name], 224, 224)
+        img=cv2.cvtColor(img,cv2.COLOR_BGR2RGB)
         images[cam_name] = einops.rearrange(img, "h w c -> c h w")
 
     # state: np.array(14) 左-右顺序
